@@ -1,0 +1,64 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-school_agent_db}
+    command: --default-authentication-plugin=caching_sha2_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      # Bind to localhost only — external clients should go through the app.
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-changeme}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "mysql://root:${MYSQL_ROOT_PASSWORD:-changeme}@mysql:3306/${MYSQL_DATABASE:-school_agent_db}"
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET required — generate with: openssl rand -hex 32}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-snx_session}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}
+      UPLOAD_DIR: /data/uploads
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
+      NODE_ENV: production
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
+      # In-process cron (daily reminder 15:30 + session cleanup 03:00 Asia/Bangkok).
+      # For single-container deploys, default ON. For multi-replica, set to "false"
+      # and hit /api/cron/[job] from an external scheduler with CRON_SECRET.
+      CRON_ENABLED: ${CRON_ENABLED:-true}
+      CRON_SECRET: ${CRON_SECRET:-}
+      # Resend (T-131). Leave RESEND_API_KEY blank for dry-run (no emails sent).
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-SchoolNextgen <onboarding@resend.dev>}
+      # Sentry — leave blank to disable. Setting either DSN enables that scope.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      # Uploads outlive the container — bind-mount to host or named volume.
+      - snx-uploads:/data/uploads
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  mysql-data:
+  snx-uploads:

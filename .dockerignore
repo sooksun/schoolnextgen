@@ -1,0 +1,47 @@
+node_modules
+.next
+.turbo
+.cache
+coverage
+.nyc_output
+
+# Tests + dev artifacts
+tests/.uploads
+**/*.test.ts
+**/*.spec.ts
+*.tsbuildinfo
+.vitest
+
+# Source control
+.git
+.gitignore
+.github
+
+# Local env (host-only)
+.env
+.env.local
+.env.test
+.env.*.local
+*.key
+*.pem
+
+# Build outputs that shouldn't ship
+dist
+build
+out
+
+# Local file storage — uploads live on a mounted volume in prod, not the image
+uploads
+backups
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Docs are nice-to-have but bloat the build context
+docs
+README.md
+*.md
+!docs/runbook.md

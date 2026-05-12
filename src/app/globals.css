@@ -1,0 +1,141 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─────────────────────────────────────────────────────────────
+   Design tokens — purple/blue/white theme per docs/decisions.md
+   Light mode: violet-600 primary on soft slate-50/white background.
+   Dark mode: violet-400 primary on slate-950/indigo-950 background.
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* shadcn semantic tokens (light) */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.541 0.281 293.009);          /* violet-600 */
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.96 0.018 264.531);         /* slate-100 */
+  --secondary-foreground: oklch(0.21 0.034 264.665);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.962 0.044 293.009);           /* violet-50 */
+  --accent-foreground: oklch(0.21 0.034 264.665);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.92 0.013 286.067);
+  --input: oklch(0.92 0.013 286.067);
+  --ring: oklch(0.541 0.281 293.009);             /* violet-600 */
+  --chart-1: oklch(0.541 0.281 293.009);          /* violet */
+  --chart-2: oklch(0.604 0.118 230.59);           /* sky */
+  --chart-3: oklch(0.59 0.235 326.5);             /* fuchsia */
+  --chart-4: oklch(0.769 0.118 230.59);           /* sky-300 */
+  --chart-5: oklch(0.768 0.044 293.009);          /* violet-300 */
+  --radius: 0.75rem;
+
+  /* SchoolNextgen brand */
+  --gradient-hero-light: linear-gradient(135deg, #faf5ff 0%, #ffffff 50%, #f0f9ff 100%);
+  --gradient-hero-dark: linear-gradient(135deg, #1e1b4b 0%, #020617 50%, #1e293b 100%);
+}
+
+.dark {
+  --background: oklch(0.141 0.005 285.823);        /* slate-950 */
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.034 264.665);               /* slate-900 */
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.034 264.665);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.768 0.187 293.009);           /* violet-400 */
+  --primary-foreground: oklch(0.141 0.005 285.823);
+  --secondary: oklch(0.274 0.022 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.022 286.033);
+  --muted-foreground: oklch(0.711 0.013 286.067);
+  --accent: oklch(0.274 0.022 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.768 0.187 293.009);
+  --chart-1: oklch(0.768 0.187 293.009);
+  --chart-2: oklch(0.769 0.118 230.59);
+  --chart-3: oklch(0.745 0.184 326.5);
+  --chart-4: oklch(0.604 0.118 230.59);
+  --chart-5: oklch(0.541 0.281 293.009);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: var(--font-sans-thai), var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Utility classes
+   ───────────────────────────────────────────────────────────── */
+
+.gradient-hero {
+  background-image: var(--gradient-hero-light);
+}
+.dark .gradient-hero {
+  background-image: var(--gradient-hero-dark);
+}
+
+.gradient-text {
+  background-image: linear-gradient(135deg, #7c3aed, #2563eb, #38bdf8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* react-toastify dark mode */
+.dark .Toastify__toast {
+  background-color: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+}
