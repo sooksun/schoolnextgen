@@ -59,7 +59,7 @@ type FakeUsage = {
 }
 
 function makeFakeStream(chunks: string[], usage: FakeUsage = { input_tokens: 1500, output_tokens: 80 }) {
-  let finalText = chunks.join('')
+  const finalText = chunks.join('')
   return {
     [Symbol.asyncIterator]() {
       let i = 0
