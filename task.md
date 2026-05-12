@@ -3,7 +3,7 @@
 ปรับใหม่หลัง D-001..D-005 — single Next.js app + Claude API + Reflection-First MVP
 
 Legend: 🟢 done · 🟡 partial · ⚪ deferred to Phase 1.5+ · ❌ skipped (deliberate) · 🔵 blocked
-Last audit: **2026-05-12** — 43/48 Phase 0+1 tasks ≈ 89% complete
+Last audit: **2026-05-12** — 45/48 Phase 0+1 tasks ≈ 94% complete (T-130/T-131 shipped post-audit)
 
 ---
 
@@ -75,8 +75,8 @@ Last audit: **2026-05-12** — 43/48 Phase 0+1 tasks ≈ 89% complete
 - [x] 🟢 T-126 Anthropic prompt caching — `cache_control: ephemeral` on persona + instruction; usage tokens logged in `ai_run_logs.promptCacheReadTokens / promptCacheCreationTokens`
 
 ### Week 4 — Habit Loop + Minimal Director View
-- [ ] ⚪ T-130 Daily reminder cron 15:30 — **deferred Phase 1.5** (in `phase-1.5-backlog.md` if pilot teachers ask)
-- [ ] ⚪ T-131 Resend (email) — **deferred Phase 1.5** (depends on T-130)
+- [x] 🟢 T-130 Daily reminder cron 15:30 Asia/Bangkok Mon-Fri — `node-cron` + `JOBS` registry in `src/server/cron/index.ts`, manual trigger at `/api/cron/daily-reminder` (Bearer CRON_SECRET), idempotent via `daily_reminder_logs` UNIQUE(school_id, run_date, job_kind)
+- [x] 🟢 T-131 Resend (email) — wired at `// T-131 hook` in `daily-reminder.ts`. Missing `RESEND_API_KEY` → dry-run mode (logs `emailMode: 'dry_run'`, no network calls). Per-recipient failures captured in `details.sendFailures`, never crash the cron
 - [x] 🟢 T-132 Streak calc — `getTeacherStreak()` in `queries.ts` (skips weekends, ≤ 60 day window)
 - [x] 🟢 T-133 `<StreakIndicator>` component (active + zero-state)
 - [ ] 🟡 T-134 InsightFeedback — **partial:** Director Dashboard มี tag cloud + counts ครบ แต่ "ส่งให้ครู" widget (รายบุคคล) ยังไม่มี
@@ -137,10 +137,10 @@ Last audit: **2026-05-12** — 43/48 Phase 0+1 tasks ≈ 89% complete
 
 ## ที่เหลือใน Phase 1 — สรุปสั้น
 
-**8 tasks pending** out of 48:
+**6 tasks pending** out of 48:
 - 2 ❌ `T-022`, `T-023` — `/dev/test-ai` dev playground; **deliberately skipped** ใช้ Reflection ตัวจริงแทน
-- 4 ⚪ `T-130`, `T-131`, `T-134` (partial), `T-146` (partial) — Phase 1.5 features (cron + email + per-teacher insight widget + metrics dashboard)
-- 4 ⚪ `T-140`, `T-141`, `T-143`, `T-144`, `T-145` — **manual pilot execution work** ไม่ใช่ coding
+- 2 ⚪ `T-134` (partial), `T-146` (partial) — Phase 1.5 features (per-teacher insight widget + metrics dashboard)
+- 5 ⚪ `T-140`, `T-141`, `T-143`, `T-144`, `T-145` — **manual pilot execution work** ไม่ใช่ coding
 
 **Coding work เหลือ ~0** สำหรับ Phase 1 acceptance. ที่เหลือคือ **pilot execution + Phase 1.5 backlog items**.
 
@@ -150,12 +150,13 @@ Last audit: **2026-05-12** — 43/48 Phase 0+1 tasks ≈ 89% complete
 
 ลำดับความสำคัญตาม trigger likelihood:
 1. ~~D-6 Edit-reflection page~~ ✅ ส่งมอบแล้ว 2026-05-12
-2. D-5 Streaming latency widget (รอ pilot feedback)
-3. D-3 prisma in layout ~~refactor opportunistically~~ ✅ ส่งมอบแล้ว 2026-05-12
-4. D-2 Full Area/Year/Term ContextSwitcher (รอ Phase 8 demand)
-5. T-130/T-131 Daily reminder cron + email
-6. T-134 InsightFeedback widget สำหรับครู
-7. T-146 Metrics dashboard (AI cost, % บันทึก, error rate)
+2. ~~T-130 Daily reminder cron~~ ✅ ส่งมอบแล้ว 2026-05-12
+3. ~~T-131 Resend email~~ ✅ ส่งมอบแล้ว 2026-05-12
+4. ~~D-3 prisma in layout~~ ✅ ส่งมอบแล้ว 2026-05-12
+5. D-5 Streaming latency widget (รอ pilot feedback)
+6. D-2 Full Area/Year/Term ContextSwitcher (รอ Phase 8 demand)
+7. T-134 InsightFeedback widget สำหรับครู (paused — resume only if pilot teacher asks for "what's working" signal)
+8. T-146 Metrics dashboard (AI cost, % บันทึก, error rate)
 
 ---
 
