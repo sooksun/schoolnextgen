@@ -1,5 +1,6 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { BookOpenText, Hash, NotebookPen, Users } from 'lucide-react'
+import { ArrowRight, BarChart3, BookOpenText, Hash, NotebookPen, Users } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { requireScope } from '@/server/tenant/scope'
@@ -10,6 +11,8 @@ import {
   listTodayReflections,
 } from '@/server/reflection/queries'
 import { formatThaiShort, formatThaiWeekday } from '@/lib/date/thai'
+
+const METRICS_ROLES = new Set(['director', 'academic_lead', 'deputy_academic'])
 
 export const metadata = { title: 'Dashboard โรงเรียน' }
 
@@ -33,16 +36,26 @@ export default async function SchoolDashboardPage() {
 
   return (
     <div className="container max-w-6xl mx-auto p-4 sm:p-6 space-y-6">
-      <header className="space-y-1">
-        <p className="text-xs text-muted-foreground">{formatThaiWeekday(new Date())}</p>
-        <h1 className="text-2xl font-semibold">
-          ภาพรวม{' '}
-          <span className="gradient-text">{scope.schoolName}</span>
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          ปี {scope.academicYearLabel}
-          {scope.academicTermName ? ` · ${scope.academicTermName}` : ''}
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">{formatThaiWeekday(new Date())}</p>
+          <h1 className="text-2xl font-semibold">
+            ภาพรวม{' '}
+            <span className="gradient-text">{scope.schoolName}</span>
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            ปี {scope.academicYearLabel}
+            {scope.academicTermName ? ` · ${scope.academicTermName}` : ''}
+          </p>
+        </div>
+        {METRICS_ROLES.has(scope.role) ? (
+          <Link
+            href="/school/dashboard/metrics"
+            className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+          >
+            <BarChart3 className="size-3.5" /> ดู Metrics <ArrowRight className="size-3" />
+          </Link>
+        ) : null}
       </header>
 
       <section className="grid sm:grid-cols-3 gap-3">

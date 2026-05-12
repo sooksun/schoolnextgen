@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BookOpen, LayoutDashboard, NotebookPen, Sparkles, Users } from 'lucide-react'
+import { BarChart3, BookOpen, LayoutDashboard, NotebookPen, Sparkles, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type NavItem = {
@@ -16,6 +16,7 @@ const NAV: NavItem[] = [
   { href: '/teacher', label: 'หน้าหลัก', icon: LayoutDashboard, roles: ['teacher'] },
   { href: '/teacher/reflections', label: 'บันทึก Reflection', icon: NotebookPen, roles: ['teacher'] },
   { href: '/school/dashboard', label: 'Dashboard โรงเรียน', icon: LayoutDashboard, roles: ['director', 'academic_lead', 'deputy_academic', 'deputy_budget', 'deputy_hr', 'deputy_general_affairs'] },
+  { href: '/school/dashboard/metrics', label: 'Metrics', icon: BarChart3, roles: ['director', 'academic_lead', 'deputy_academic'] },
   { href: '/school/reflections', label: 'บันทึกครู', icon: BookOpen, roles: ['director', 'academic_lead', 'deputy_academic'] },
   { href: '/school/teachers', label: 'ครู', icon: Users, roles: ['director', 'academic_lead', 'deputy_academic', 'deputy_hr'] },
   { href: '/agents', label: 'AI Agents', icon: Sparkles },
