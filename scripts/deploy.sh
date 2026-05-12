@@ -21,7 +21,9 @@
 set -euo pipefail
 
 REF="${1:-main}"
-APP_URL="${APP_URL:-http://localhost:3000}"
+# APP_URL is computed after preflight reads APP_PORT from .env. Set the
+# APP_URL env var when invoking to override (e.g. healthcheck via TLS proxy):
+#   APP_URL=https://snx.example.com ./scripts/deploy.sh
 COMPOSE="${COMPOSE:-docker compose}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 MARIADB_IMAGE="${MARIADB_IMAGE:-mariadb:11}"
@@ -71,6 +73,8 @@ else
   exit 1
 fi
 [[ -n "$DB_PASSWORD" ]] || { err "DATABASE_URL has no password — refusing to deploy against an unauthenticated DB"; exit 1; }
+
+APP_PORT_VAL="$(read_env_var APP_PORT)"
 
 log "Preflight target: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
@@ -161,7 +165,8 @@ log "Restarting app container..."
 $COMPOSE up -d app
 
 # ── 7. Health check (60s window) ─────────────────────────────────
-log "Waiting for /api/health to return 200..."
+APP_URL="${APP_URL:-http://localhost:${APP_PORT_VAL:-3000}}"
+log "Waiting for $APP_URL/api/health to return 200..."
 for i in $(seq 1 30); do
   if curl -fsS -o /dev/null -w '%{http_code}' "$APP_URL/api/health" | grep -q '^200$'; then
     log "Health check passed after ${i}x2s"

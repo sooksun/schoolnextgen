@@ -18,6 +18,12 @@ services:
       MAX_UPLOAD_SIZE_MB: "${MAX_UPLOAD_SIZE_MB:-100}"
       NODE_ENV: "production"
       PUBLIC_APP_URL: "${PUBLIC_APP_URL:-http://localhost:3000}"
+      # Port the Next.js server listens on INSIDE the container. Combined with
+      # the ports mapping below this lets ops put the app on any host port
+      # without code changes. Set both in .env to override the 3000 defaults:
+      #   APP_PORT=9921   (host side  — what users connect to)
+      #   PORT=9920       (container side — what Next.js binds to)
+      PORT: "${PORT:-3000}"
       # In-process cron (daily reminder 15:30 + session cleanup 03:00 Asia/Bangkok).
       # For single-container deploys, default ON. For multi-replica, set to "false"
       # and hit /api/cron/[job] from an external scheduler with CRON_SECRET.
@@ -31,12 +37,13 @@ services:
       SENTRY_ENVIRONMENT: "${SENTRY_ENVIRONMENT:-}"
       SENTRY_TRACES_SAMPLE_RATE: "${SENTRY_TRACES_SAMPLE_RATE:-0.1}"
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "${APP_PORT:-3000}:${PORT:-3000}"
     volumes:
       # Uploads outlive the container - bind-mount to host or named volume.
       - snx-uploads:/data/uploads
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      # CMD-SHELL so $PORT in the URL gets interpolated by the container shell.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${PORT:-3000}/api/health > /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
