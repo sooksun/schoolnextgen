@@ -41,12 +41,31 @@ log "Current HEAD: $PREV_SHA"
 log "Target ref:   $REF"
 
 # ── 1. Backup DB ─────────────────────────────────────────────────
+# Compose's mysql service has MYSQL_ROOT_PASSWORD set (see docker-compose.yml),
+# so mysqldump must authenticate. Read it from .env and pass via MYSQL_PWD so
+# the password doesn't show up in `ps` inside the container.
+read_env_var() {
+  grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- \
+    | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+}
+
 if [[ -z "${SKIP_BACKUP:-}" ]]; then
-  log "Backing up MySQL before migrate..."
+  MYSQL_ROOT_PASSWORD="$(read_env_var MYSQL_ROOT_PASSWORD)"
+  MYSQL_DATABASE="$(read_env_var MYSQL_DATABASE)"
+  MYSQL_DATABASE="${MYSQL_DATABASE:-school_agent_db}"
+
+  if [[ -z "$MYSQL_ROOT_PASSWORD" ]]; then
+    err "MYSQL_ROOT_PASSWORD not set in .env — cannot authenticate mysqldump."
+    err "Either set it in .env, or rerun with SKIP_BACKUP=1 (risky — no rollback safety net)."
+    exit 1
+  fi
+
+  log "Backing up MySQL ($MYSQL_DATABASE) before migrate..."
   mkdir -p "$BACKUP_DIR"
   STAMP="$(date +%F_%H%M%S)"
   BACKUP_FILE="$BACKUP_DIR/pre-deploy-${STAMP}.sql.gz"
-  $COMPOSE exec -T mysql mysqldump -uroot --single-transaction --quick --routines school_agent_db \
+  $COMPOSE exec -T -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql \
+    mysqldump -uroot --single-transaction --quick --routines "$MYSQL_DATABASE" \
     | gzip > "$BACKUP_FILE"
   SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
   log "Backup written: $BACKUP_FILE ($SIZE)"
@@ -101,7 +120,11 @@ done
 # ── Rollback hint ────────────────────────────────────────────────
 err "Health check failed after 60s. To roll back:"
 err "  git checkout $PREV_SHA && $COMPOSE build app && $COMPOSE up -d app"
-err "  # If migrations ran, restore DB from $BACKUP_FILE:"
-err "  gunzip < $BACKUP_FILE | $COMPOSE exec -T mysql mysql -uroot school_agent_db"
+if [[ -n "${BACKUP_FILE:-}" ]]; then
+  err "  # If migrations ran, restore DB from $BACKUP_FILE:"
+  err "  source .env && gunzip < $BACKUP_FILE | $COMPOSE exec -T -e MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql mysql -uroot ${MYSQL_DATABASE:-school_agent_db}"
+else
+  err "  # No pre-deploy backup taken (SKIP_BACKUP was set). Restore from your most recent backup in $BACKUP_DIR/ if needed."
+fi
 $COMPOSE logs --tail=80 app
 exit 1
