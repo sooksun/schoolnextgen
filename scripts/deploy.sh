@@ -121,23 +121,37 @@ git pull --ff-only origin "$REF" || log "(no fast-forward — likely a tag/sha, 
 
 NEW_SHA="$(git rev-parse HEAD)"
 if [[ "$PREV_SHA" == "$NEW_SHA" ]]; then
-  log "Already at $NEW_SHA — nothing to deploy"
-  exit 0
+  # HEAD unchanged. If the app container is already running, we're done —
+  # otherwise treat this as a first-time bootstrap and proceed with build +
+  # migrate + start so the new server actually gets the app up.
+  if [[ -n "$($COMPOSE ps --status running -q app 2>/dev/null)" ]]; then
+    log "Already at $NEW_SHA and app container is running — nothing to deploy"
+    exit 0
+  fi
+  log "HEAD unchanged but app container is not running — bootstrapping deploy"
+else
+  log "Will deploy: $PREV_SHA → $NEW_SHA"
+  git --no-pager log --oneline "${PREV_SHA}..${NEW_SHA}" || true
 fi
-log "Will deploy: $PREV_SHA → $NEW_SHA"
-git --no-pager log --oneline "${PREV_SHA}..${NEW_SHA}" || true
 
 # ── 4. Build app image ───────────────────────────────────────────
 log "Building app image..."
 $COMPOSE build app
 
 # ── 5. Apply Prisma migrations ───────────────────────────────────
-# The app container reads DATABASE_URL from .env via compose substitution
-# (see docker-compose.yml). No DB creds need to be passed explicitly here —
-# preflight already confirmed the same URL works.
+# The production runner image is slim (Next.js standalone only) — no
+# `pnpm`, no `prisma` CLI. So we build the Dockerfile's `builder` stage
+# as a one-shot migrator image. Builder layers are cached from step 4
+# (`compose build app`), so this is mostly cache replay plus image export.
+# DATABASE_URL is passed explicitly because the migrator image runs via
+# `docker run`, not compose, and so doesn't auto-read .env.
 if [[ -z "${SKIP_MIGRATE:-}" ]]; then
+  log "Building migrator image (Dockerfile target=builder)..."
+  docker build --target builder -t schoolnextgen-migrator:latest .
   log "Running prisma migrate deploy..."
-  $COMPOSE run --rm app pnpm prisma migrate deploy
+  docker run --rm -e DATABASE_URL="$DATABASE_URL_VAL" \
+    schoolnextgen-migrator:latest \
+    pnpm prisma migrate deploy
 else
   log "SKIP_MIGRATE=1 — skipping migrations"
 fi
