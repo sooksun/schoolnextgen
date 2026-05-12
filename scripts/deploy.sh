@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # SchoolNextgen production deploy script.
 #
-# Pulls latest code, backs up the DB, applies migrations, rebuilds the app
-# container, restarts it, and runs a health check. Aborts on first failure.
+# Production topology:
+#   - App runs in Docker Compose (single `app` service).
+#   - Database is an EXTERNAL MariaDB on the LAN (e.g. 192.168.1.4:3306) —
+#     NOT a compose service. DATABASE_URL in .env carries the connection.
+#
+# Sequence: preflight (TCP + auth) → backup → pull → build → migrate → restart
+#          → /api/health. Aborts on first failure.
 #
 # Usage:
 #   ./scripts/deploy.sh                # deploy main
@@ -10,8 +15,8 @@
 #   SKIP_BACKUP=1 ./scripts/deploy.sh  # skip pre-deploy backup (NOT recommended)
 #   SKIP_MIGRATE=1 ./scripts/deploy.sh # skip prisma migrate deploy
 #
-# Expects to run on the server inside the repo root (e.g. /DATA/AppData/www/schoolnextgen)
-# with docker compose already configured and `.env` present.
+# Run from the repo root on the server (e.g. /DATA/AppData/www/schoolnextgen)
+# with .env present and docker compose v2 available.
 
 set -euo pipefail
 
@@ -19,6 +24,7 @@ REF="${1:-main}"
 APP_URL="${APP_URL:-http://localhost:3000}"
 COMPOSE="${COMPOSE:-docker compose}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
+MARIADB_IMAGE="${MARIADB_IMAGE:-mariadb:11}"
 
 log() { printf '\033[1;34m[deploy]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[deploy] ERROR:\033[0m %s\n' "$*" >&2; }
@@ -28,7 +34,8 @@ trap 'err "Deploy failed at line $LINENO. Container state below:"; $COMPOSE ps |
 # ── 0. Sanity checks ─────────────────────────────────────────────
 [[ -f docker-compose.yml ]] || { err "docker-compose.yml not found — run from repo root"; exit 1; }
 [[ -f .env ]] || { err ".env not found — production env required"; exit 1; }
-command -v git >/dev/null || { err "git not in PATH"; exit 1; }
+command -v git    >/dev/null || { err "git not in PATH"; exit 1; }
+command -v docker >/dev/null || { err "docker not in PATH"; exit 1; }
 
 if [[ -n "$(git status --porcelain)" ]]; then
   err "Working tree is dirty. Commit/stash local changes before deploy:"
@@ -40,32 +47,63 @@ PREV_SHA="$(git rev-parse HEAD)"
 log "Current HEAD: $PREV_SHA"
 log "Target ref:   $REF"
 
-# ── 1. Backup DB ─────────────────────────────────────────────────
-# Compose's mysql service has MYSQL_ROOT_PASSWORD set (see docker-compose.yml),
-# so mysqldump must authenticate. Read it from .env and pass via MYSQL_PWD so
-# the password doesn't show up in `ps` inside the container.
+# ── 1. Preflight: parse DATABASE_URL + DB reachability ───────────
+# Verify TCP + auth against the external MariaDB BEFORE pulling/building,
+# so a misconfigured .env aborts cheaply instead of mid-migration.
+
 read_env_var() {
   grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- \
     | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 
+DATABASE_URL_VAL="$(read_env_var DATABASE_URL)"
+[[ -n "$DATABASE_URL_VAL" ]] || { err "DATABASE_URL not set in .env"; exit 1; }
+
+# Parse mysql://user:pass@host:port/dbname[?...]
+if [[ "$DATABASE_URL_VAL" =~ ^mysql://([^:@/]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?/([^?]+) ]]; then
+  DB_USER="${BASH_REMATCH[1]}"
+  DB_PASSWORD="${BASH_REMATCH[3]}"
+  DB_HOST="${BASH_REMATCH[4]}"
+  DB_PORT="${BASH_REMATCH[6]:-3306}"
+  DB_NAME="${BASH_REMATCH[7]}"
+else
+  err "Could not parse DATABASE_URL — expected mysql://user:pass@host:port/db"
+  exit 1
+fi
+[[ -n "$DB_PASSWORD" ]] || { err "DATABASE_URL has no password — refusing to deploy against an unauthenticated DB"; exit 1; }
+
+log "Preflight target: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+# 1a. TCP-level reachability (bash builtin /dev/tcp; 5s timeout; no extra tools).
+if ! timeout 5 bash -c "</dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+  err "Cannot reach ${DB_HOST}:${DB_PORT} (TCP). Check network/firewall/MariaDB bind-address."
+  exit 1
+fi
+log "OK: TCP ${DB_HOST}:${DB_PORT} reachable"
+
+# 1b. Auth + database existence via one-shot mariadb client container.
+if ! docker run --rm -e MYSQL_PWD="$DB_PASSWORD" "$MARIADB_IMAGE" \
+      mariadb -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -D"$DB_NAME" -e "SELECT 1" \
+      >/dev/null 2>&1; then
+  err "MariaDB auth failed or database '${DB_NAME}' not accessible on ${DB_HOST}:${DB_PORT}."
+  err "Re-run for detail:"
+  err "  docker run --rm -e MYSQL_PWD=\"\$DB_PASSWORD\" $MARIADB_IMAGE mariadb -h${DB_HOST} -P${DB_PORT} -u${DB_USER} -D${DB_NAME} -e 'SELECT 1'"
+  exit 1
+fi
+log "OK: MariaDB auth + database '${DB_NAME}' accessible"
+
+# ── 2. Backup DB ─────────────────────────────────────────────────
 if [[ -z "${SKIP_BACKUP:-}" ]]; then
-  MYSQL_ROOT_PASSWORD="$(read_env_var MYSQL_ROOT_PASSWORD)"
-  MYSQL_DATABASE="$(read_env_var MYSQL_DATABASE)"
-  MYSQL_DATABASE="${MYSQL_DATABASE:-school_agent_db}"
-
-  if [[ -z "$MYSQL_ROOT_PASSWORD" ]]; then
-    err "MYSQL_ROOT_PASSWORD not set in .env — cannot authenticate mysqldump."
-    err "Either set it in .env, or rerun with SKIP_BACKUP=1 (risky — no rollback safety net)."
-    exit 1
-  fi
-
-  log "Backing up MySQL ($MYSQL_DATABASE) before migrate..."
+  log "Backing up ${DB_NAME} from ${DB_HOST}..."
   mkdir -p "$BACKUP_DIR"
   STAMP="$(date +%F_%H%M%S)"
   BACKUP_FILE="$BACKUP_DIR/pre-deploy-${STAMP}.sql.gz"
-  $COMPOSE exec -T -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql \
-    mysqldump -uroot --single-transaction --quick --routines "$MYSQL_DATABASE" \
+  # mariadb-dump runs in a one-shot container that reaches the external DB
+  # over the host's network. MYSQL_PWD keeps the password out of argv.
+  docker run --rm -e MYSQL_PWD="$DB_PASSWORD" "$MARIADB_IMAGE" \
+    mariadb-dump -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" \
+      --single-transaction --quick --routines --triggers \
+      --default-character-set=utf8mb4 "$DB_NAME" \
     | gzip > "$BACKUP_FILE"
   SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
   log "Backup written: $BACKUP_FILE ($SIZE)"
@@ -73,7 +111,7 @@ else
   log "SKIP_BACKUP=1 — skipping backup (risky)"
 fi
 
-# ── 2. Pull latest code ──────────────────────────────────────────
+# ── 3. Pull latest code ──────────────────────────────────────────
 log "Fetching origin..."
 git fetch --all --tags --prune
 
@@ -89,11 +127,14 @@ fi
 log "Will deploy: $PREV_SHA → $NEW_SHA"
 git --no-pager log --oneline "${PREV_SHA}..${NEW_SHA}" || true
 
-# ── 3. Build app image ───────────────────────────────────────────
+# ── 4. Build app image ───────────────────────────────────────────
 log "Building app image..."
 $COMPOSE build app
 
-# ── 4. Apply Prisma migrations ───────────────────────────────────
+# ── 5. Apply Prisma migrations ───────────────────────────────────
+# The app container reads DATABASE_URL from .env via compose substitution
+# (see docker-compose.yml). No DB creds need to be passed explicitly here —
+# preflight already confirmed the same URL works.
 if [[ -z "${SKIP_MIGRATE:-}" ]]; then
   log "Running prisma migrate deploy..."
   $COMPOSE run --rm app pnpm prisma migrate deploy
@@ -101,11 +142,11 @@ else
   log "SKIP_MIGRATE=1 — skipping migrations"
 fi
 
-# ── 5. Restart app ───────────────────────────────────────────────
+# ── 6. Restart app ───────────────────────────────────────────────
 log "Restarting app container..."
 $COMPOSE up -d app
 
-# ── 6. Health check (60s window) ─────────────────────────────────
+# ── 7. Health check (60s window) ─────────────────────────────────
 log "Waiting for /api/health to return 200..."
 for i in $(seq 1 30); do
   if curl -fsS -o /dev/null -w '%{http_code}' "$APP_URL/api/health" | grep -q '^200$'; then
@@ -122,7 +163,7 @@ err "Health check failed after 60s. To roll back:"
 err "  git checkout $PREV_SHA && $COMPOSE build app && $COMPOSE up -d app"
 if [[ -n "${BACKUP_FILE:-}" ]]; then
   err "  # If migrations ran, restore DB from $BACKUP_FILE:"
-  err "  source .env && gunzip < $BACKUP_FILE | $COMPOSE exec -T -e MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql mysql -uroot ${MYSQL_DATABASE:-school_agent_db}"
+  err "  MYSQL_PWD='<password from DATABASE_URL>' gunzip < $BACKUP_FILE | docker run --rm -i -e MYSQL_PWD $MARIADB_IMAGE mariadb -h${DB_HOST} -P${DB_PORT} -u${DB_USER} ${DB_NAME}"
 else
   err "  # No pre-deploy backup taken (SKIP_BACKUP was set). Restore from your most recent backup in $BACKUP_DIR/ if needed."
 fi
