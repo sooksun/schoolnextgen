@@ -118,6 +118,13 @@ Last audit: **2026-05-12** — 45/48 Phase 0+1 tasks ≈ 94% complete (T-130/T-1
 - 🟢 Sentry instrumentation (opt-in, scrubs PII, filters user-facing ActionError codes)
 - 🟢 `docs/runbook.md` (deploy / backup / restore / rollback / pre-pilot checklist / Sentry)
 
+### Git / CI (2026-05-12)
+- 🟢 GitHub repo: <https://github.com/sooksun/schoolnextgen> (public, HTTPS via gh token)
+- 🟢 `.github/workflows/ci.yml` — typecheck + lint + 164 tests on push/PR to main; MySQL 8 service container; ~1m20s per run
+- 🟢 CI badge in README, green as of `696f320`
+- 🟢 ESLint config: `^_` prefix honors intentionally-unused params; `coverage/**` globally ignored — suite at 0 errors, 0 warnings
+- ⏳ Watch item: GitHub deprecating Node 20 actions (Q2 2026) — `actions/checkout`, `setup-node`, `pnpm/action-setup` will need version bump or `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` before 2026-06-02
+
 ### D-6 Edit reflection page (`/frontend-implementer` audit)
 - 🟢 `/teacher/reflections/[id]/edit` page + permission gates + ReflectionForm reflectionId-mode
 
