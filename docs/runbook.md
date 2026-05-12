@@ -1,6 +1,6 @@
 # Operations Runbook — SchoolNextgen
 
-The short, opinionated reference for deploying, backing up, restoring, and rolling back the Phase 1 stack. Update this when commands change.
+Short, opinionated reference for deploying, backing up, restoring, and rolling back the Phase 1 stack. Update this when commands change.
 
 ---
 
@@ -8,155 +8,163 @@ The short, opinionated reference for deploying, backing up, restoring, and rolli
 
 | Layer | Tech | How it runs |
 |---|---|---|
-| Web | Next.js 16 + Node 22 (Alpine in Docker) | `node server.js` (standalone) |
-| DB | MySQL 8.0 | Docker service `mysql` |
+| Web | Next.js 16 + Node 22 (Alpine in Docker) | `node server.js` (standalone) — compose service `app` |
+| DB | **External MariaDB** (NOT in compose) | TCP/IP to host on the LAN, e.g. `192.168.1.4:3306` (Prisma uses `mysql://` for MariaDB) |
 | Storage | Local disk at `/data/uploads` | Docker volume `snx-uploads` |
 | AI | Anthropic Claude API (Haiku/Sonnet/Opus by task) | HTTPS to api.anthropic.com |
 
-Single-host, no reverse proxy assumed. Add nginx/Caddy in front for TLS termination.
+Ports are env-driven via `.env`:
+- `APP_PORT` (default 3000) — host side, what users / reverse proxy hit
+- `PORT` (default 3000) — container side, what Next.js binds to
+
+A reverse proxy (nginx / Caddy / Cloudflare) terminates TLS in front of `app` and forwards to `APP_PORT`. The app itself does not speak HTTPS.
 
 ---
 
 ## 1. First-time deploy
 
 ```bash
-git clone <repo>
-cd schoolnextgen
+git clone <repo> /DATA/AppData/www/schoolnextgen
+cd /DATA/AppData/www/schoolnextgen
 
-# 1. Build .env from template
+# 1. Build .env from template, then fill the secrets
 cp .env.example .env
-# Then EDIT .env to set:
-#   AUTH_SECRET           = openssl rand -hex 32
-#   ANTHROPIC_API_KEY     = sk-ant-...
-#   MYSQL_ROOT_PASSWORD   = strong password
-#   PUBLIC_APP_URL        = https://your.domain
 nano .env
+#   DATABASE_URL="mysql://<user>:<password>@<host>:3306/school_agent_db"
+#   AUTH_SECRET="$(openssl rand -hex 32)"
+#   ANTHROPIC_API_KEY="sk-ant-..."
+#   PUBLIC_APP_URL="http://schoolnextgen.cnppai.com"    # https:// once TLS is in place
+#   APP_PORT="9921"     # host port (optional, default 3000)
+#   PORT="9920"         # container port (optional, default 3000)
+chmod 600 .env
 
-# 2. Pull/build and start the stack
-docker compose pull mysql
-docker compose build app
-docker compose up -d
+# 2. Make sure the external DB exists and `<user>` can write to it
+#    From any host that can reach the DB:
+docker run --rm -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> -e "CREATE DATABASE IF NOT EXISTS school_agent_db CHARACTER SET utf8mb4;"
 
-# 3. Run migrations + seed (only on first deploy)
-docker compose exec app sh -c 'npx prisma migrate deploy'
-docker compose exec app sh -c 'node prisma/seed.js'  # if seed compiled in image
+# 3. Deploy. scripts/deploy.sh: preflight → backup → pull → build → migrate
+#    (via the Dockerfile's `builder` stage) → restart → /api/health.
+#    On first run, builder + runner images take ~5-10 min cold. Cached after.
+./scripts/deploy.sh
 
-# 4. Verify
-curl -fsS http://localhost:3000/api/health | jq
-docker compose ps        # all services should be "healthy"
-docker compose logs app | tail -20
+# 4. Seed (only on first deploy). The seed image is the same `schoolnextgen-migrator`
+#    that deploy.sh built. The seed is idempotent — re-running won't duplicate.
+DBURL="$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/^"//; s/"$//')"
+docker run --rm -e DATABASE_URL="$DBURL" schoolnextgen-migrator:latest pnpm db:seed
+
+# 5. Verify
+curl -fsS "http://localhost:${APP_PORT:-3000}/api/health" | jq
+docker compose ps        # app should be "running" + healthy
+docker compose logs app --tail=20
 ```
 
-If `/api/health` returns `200 {"status":"ok"}` and the DB check passes, the app is live.
+After step 3 returns clean, the app is live. After step 4, demo logins (`teacher@demo.local` / `Pass1234!` etc.) work. Rotate `Pass1234!` before letting the first real teacher in.
 
 ---
 
 ## 2. Daily backups
 
-### Local dev (Windows / Laragon / macOS / Linux with mysql-client)
+### Production (docker host)
+
+Use `scripts/backup-prod.sh`. It reads `DATABASE_URL` from `.env`, runs `mariadb-dump` in a one-shot `mariadb:11` container against the external DB, gzips to `./backups/`, and rotates anything older than 30 days.
 
 ```bash
-pnpm backup   # auto-detects Laragon's mysqldump on C: or D: drive
+# Install in crontab (root) — runs nightly at 03:00 local
+sudo crontab -e
+# Add:
+0 3 * * * /DATA/AppData/www/schoolnextgen/scripts/backup-prod.sh >> /var/log/snx-backup.log 2>&1
 ```
 
-The script:
-- Parses `DATABASE_URL` from `.env.local` + `.env`
-- Runs `mysqldump --single-transaction --routines --triggers --quick`
-- Pipes through gzip → `./backups/snx-YYYY-MM-DD_HHMMSS.sql.gz`
-- Rotates files older than `--keep` days (default 30)
-- Auto-detects mysqldump in this order: `MYSQLDUMP_PATH` env → Laragon (`C:\\laragon\\bin\\mysql\\*\\bin\\mysqldump.exe` or `D:\\laragon\\bin\\...`) → PATH
-- Cleans up the empty output file if mysqldump fails (no zero-byte ghost backups)
+`scripts/backup-prod.sh` handles cron's stripped PATH, parses the URL with the same regex `deploy.sh` uses, refuses to write a backup under 1KB (catches silent dump failures), and exits non-zero on any error — so cron's MAILTO (if set) actually sees breakage.
 
-### Production (Docker compose)
+Manual run anytime: `./scripts/backup-prod.sh` (writes the same file, same rotation).
 
-The `app` container does NOT have `mysqldump` — only the `mysql` service does. Run the dump from inside the mysql container:
+Overrides: `BACKUP_DIR=/mnt/backups KEEP_DAYS=60 ./scripts/backup-prod.sh`.
 
-```bash
-# Daily cron (host crontab, NOT inside any container)
-0 3 * * *  cd /srv/snx && /srv/snx/scripts/backup-docker.sh >> /var/log/snx-backup.log 2>&1
-```
+### Local dev (Laragon)
 
-Where `scripts/backup-docker.sh` is:
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-STAMP=$(date -u +%Y-%m-%d_%H%M%S)
-docker compose exec -T mysql sh -c \
-  "mysqldump --single-transaction --routines --triggers --quick \
-   -u root -p$MYSQL_ROOT_PASSWORD school_agent_db" \
-  | gzip > /srv/snx/backups/snx-${STAMP}.sql.gz
-# Rotate
-find /srv/snx/backups -name 'snx-*.sql.gz' -mtime +30 -delete
-```
+`pnpm backup` still works — `scripts/backup.mjs` auto-detects Laragon's `mysqldump.exe` and dumps the local DB. Not relevant in prod (no Laragon, no host mysqldump).
 
 ### Verify a backup is restorable (do this once before the pilot)
 
 ```bash
-# 1. Take a fresh dump
-pnpm backup    # or backup-docker.sh in prod
+DBURL="$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/^"//; s/"$//')"
 
-# 2. Restore into a scratch DB
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD \
-  -e "CREATE DATABASE school_agent_db_restore_test"
-gunzip < ./backups/snx-LATEST.sql.gz | \
-  docker compose exec -T mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db_restore_test
+# Take a fresh dump
+./scripts/backup-prod.sh
 
-# 3. Verify table counts match the live DB
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db_restore_test \
-  -e "SELECT COUNT(*) AS agents FROM agents; SELECT COUNT(*) AS users FROM users;"
+# Restore it into a scratch DB
+LATEST="$(ls -t ./backups/daily-*.sql.gz | head -1)"
+docker run --rm -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> -e "CREATE DATABASE school_agent_db_restore_test CHARACTER SET utf8mb4;"
+gunzip < "$LATEST" | docker run --rm -i -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> school_agent_db_restore_test
 
-# 4. Drop the scratch DB
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD \
-  -e "DROP DATABASE school_agent_db_restore_test"
+# Verify table counts match the live DB
+docker run --rm -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> -t -e "
+    SELECT 'live' AS db, COUNT(*) AS agents FROM school_agent_db.agents
+    UNION ALL
+    SELECT 'restore', COUNT(*) FROM school_agent_db_restore_test.agents;"
+
+# Drop the scratch DB
+docker run --rm -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> -e "DROP DATABASE school_agent_db_restore_test;"
 ```
 
 **Untested backups are not backups.**
 
 ---
 
-## 3. Pre-migration backup (mandatory)
+## 3. Pre-migration backup (automatic)
 
-Before any `prisma migrate deploy` in production:
+`scripts/deploy.sh` runs a pre-deploy backup automatically before `prisma migrate deploy`. The file lives under `./backups/pre-deploy-<timestamp>.sql.gz` and is referenced in the rollback hint if the post-deploy health check fails.
 
-```bash
-docker compose exec -T mysql sh -c \
-  "mysqldump --single-transaction --routines --triggers \
-   -u root -p$MYSQL_ROOT_PASSWORD school_agent_db" \
-  | gzip > pre-migrate-$(date -u +%Y%m%dT%H%M).sql.gz
-```
+To skip (e.g. you already snapshotted manually): `SKIP_BACKUP=1 ./scripts/deploy.sh` — but expect to lose the rollback safety net.
 
-Keep these for 90 days. Migrations are NOT reversible via Prisma — restore is the only rollback.
+Keep pre-deploy backups for 90 days. Migrations are NOT reversible via Prisma — restore is the only rollback.
 
 ---
 
 ## 4. Rollback playbook
 
 ### App-only rollback (no schema change)
+
 ```bash
-# 1. Note the failing image hash from `docker compose images`
-# 2. Re-tag previous image as :current and redeploy
-docker tag schoolnextgen-app:previous schoolnextgen-app:current
-docker compose up -d --no-deps --force-recreate app
+# 1. Find the previous commit you want to roll back to
+git log --oneline -5
+
+# 2. Re-deploy that ref. deploy.sh handles the build + restart.
+./scripts/deploy.sh <commit-sha-or-tag>
+
 # 3. Verify
-curl -fsS http://localhost:3000/api/health
+curl -fsS "http://localhost:${APP_PORT:-3000}/api/health"
 ```
 
 ### Rollback after a bad migration
+
 ```bash
-# 1. Stop traffic (or enable maintenance mode)
+DBURL="$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/^"//; s/"$//')"
+PW='<password from DATABASE_URL>'
+
+# 1. Stop traffic
 docker compose stop app
 
-# 2. Restore the pre-migration dump
-gunzip < pre-migrate-YYYYMMDDTHHMM.sql.gz | \
-  docker compose exec -T mysql mysql -u root -p$MYSQL_ROOT_PASSWORD school_agent_db
+# 2. Restore the pre-migration dump (deploy.sh wrote it under ./backups/pre-deploy-*.sql.gz)
+LATEST="$(ls -t ./backups/pre-deploy-*.sql.gz | head -1)"
+gunzip < "$LATEST" | docker run --rm -i -e MYSQL_PWD="$PW" mariadb:11 \
+  mariadb -h<host> -u<user> school_agent_db
 
 # 3. Mark migration as rolled back in Prisma's bookkeeping table
-docker compose exec app npx prisma migrate resolve --rolled-back <migration_name>
+docker run --rm -e DATABASE_URL="$DBURL" schoolnextgen-migrator:latest \
+  pnpm prisma migrate resolve --rolled-back <migration_name>
 
-# 4. Redeploy the previous app version (Step "App-only rollback" above)
+# 4. Deploy the previous app version
+./scripts/deploy.sh <previous-commit-sha>
 
-# 5. Resume traffic, verify
-curl -fsS http://localhost:3000/api/health
+# 5. Verify
+curl -fsS "http://localhost:${APP_PORT:-3000}/api/health"
 ```
 
 Prisma does **not** generate `down` migrations. Restore-from-dump is the only safe path.
@@ -166,44 +174,67 @@ Prisma does **not** generate `down` migrations. Restore-from-dump is the only sa
 ## 5. Routine ops
 
 ### Tail logs
+
 ```bash
 docker compose logs -f app
-docker compose logs --since 1h mysql
+docker compose logs --since 1h app    # MariaDB lives outside compose — see your DB host's syslog instead
 ```
 
-### Connect to DB
+### Connect to the DB
+
 ```bash
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db
+DBURL="$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/^"//; s/"$//')"
+# Quick one-off SELECT (auth from DATABASE_URL via the mariadb client):
+docker run --rm -it -e MYSQL_PWD='<password>' mariadb:11 \
+  mariadb -h<host> -u<user> -Dschool_agent_db
 ```
 
-### Inspect a session
-```bash
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db \
-  -e "SELECT id, user_id, expires_at FROM sessions ORDER BY created_at DESC LIMIT 5;"
+For frequent use, install the `mariadb-client` package on the host (`apt-get install mariadb-client`) and run `mariadb` directly without the docker wrapper.
+
+### Inspect recent sessions
+
+```sql
+SELECT id, user_id, expires_at, created_at
+FROM sessions
+ORDER BY created_at DESC LIMIT 5;
 ```
 
-### Clean expired sessions (run weekly until cron lands)
-```bash
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db \
-  -e "DELETE FROM sessions WHERE expires_at < NOW() - INTERVAL 1 DAY;"
+### Clean expired sessions
+
+Runs automatically via in-process cron (see §10). Manual one-off:
+
+```sql
+DELETE FROM sessions WHERE expires_at < NOW() - INTERVAL 1 DAY;
 ```
 
 ### Force-logout a user
+
+```sql
+DELETE FROM sessions WHERE user_id = '<uuid>';
+```
+
+### Restart the app (without rebuilding)
+
 ```bash
-docker compose exec mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD school_agent_db \
-  -e "DELETE FROM sessions WHERE user_id='<uuid>';"
+docker compose restart app
+```
+
+### Rebuild and restart (after pulling new code)
+
+```bash
+git pull origin main && ./scripts/deploy.sh
 ```
 
 ---
 
 ## 6. Health monitoring
 
-External uptime check should poll **`https://your.domain/api/health`** every 60s.
+External uptime check polls `${PUBLIC_APP_URL}/api/health` every 60s.
 
-Response shape:
+Response shape (HTTP 200):
 ```json
 {
-  "status": "ok",                  // "ok" | "degraded"
+  "status": "ok",
   "uptimeSec": 84123,
   "version": "0.1.0",
   "timestamp": "2026-05-12T...",
@@ -216,41 +247,51 @@ Response shape:
 | HTTP | Meaning | Action |
 |---|---|---|
 | 200 | All checks ok | green |
-| 503 | One or more checks failed (DB unreachable) | page on-call; check `docker compose ps` + DB logs |
-| no response / 5xx | App process down | restart app: `docker compose restart app` |
+| 503 | DB unreachable / slow | page on-call; check DB host network + `docker compose logs app` |
+| no response / 5xx | App process down | `docker compose restart app` |
 
 ---
 
 ## 7. Common failure modes
 
-### "Cannot connect to MySQL" on app start
-- `docker compose ps` — is mysql healthy? Wait ~30s on cold start
-- `docker compose logs mysql` — look for "ready for connections"
-- Check `DATABASE_URL` host is `mysql` (the service name), not `localhost`, when inside the container
+### "Cannot connect to MariaDB" on app start
 
-### `/api/health` returns 503 in production
-- Most likely: DB is down or slow
-- Run `docker compose exec mysql mysqladmin ping -uroot -p$MYSQL_ROOT_PASSWORD`
-- Check disk space: `df -h` — MySQL refuses writes when disk > ~95% full
+- DB host reachable from the host? `nc -z <host> 3306` (or just `bash -c "</dev/tcp/<host>/3306"`)
+- Container can reach the DB? `docker run --rm mariadb:11 mariadb -h<host> -u<user> -p -e "SELECT 1"` — if this hangs, the docker network can't route to the DB host (you may be using the host's LAN IP from a network that can't see it). Use the IP that's reachable from the docker bridge (often the host's external IP, not the LAN one).
+- `.env` `DATABASE_URL` matches the URL you tested? Compose env block overrides `.env` only if you HARDCODE the value in `docker-compose.yml` — current compose uses `${DATABASE_URL}` so `.env` wins.
+
+### `/api/health` returns 503
+
+- DB is down, slow, or unreachable.
+- Run the preflight commands from §7 above.
+- Check disk space on the DB host: `df -h` — MariaDB refuses writes when disk > ~95% full.
 
 ### Anthropic API errors in `ai_run_logs`
+
 ```sql
 SELECT status, COUNT(*), MAX(created_at) FROM ai_run_logs
 WHERE created_at > NOW() - INTERVAL 1 HOUR GROUP BY status;
 ```
-- Sudden spike in `error` → check `ANTHROPIC_API_KEY` validity; check rate limit at api.anthropic.com
-- Many `success` but `cost_usd` climbing fast → review prompt-cache hit rate via `prompt_cache_read_tokens`
 
-### Login rate-limit lockout for legit user
-The in-memory `loginByIp` bucket fires after 10 failed attempts in 15 min. To unblock:
+- Sudden spike in `error` → check `ANTHROPIC_API_KEY` validity; check rate limit at api.anthropic.com.
+- Many `success` but `cost_usd` climbing fast → review prompt-cache hit rate via `prompt_cache_read_tokens`.
+
+### Login redirects back to /login (cookie loop)
+
+`Secure` flag on the session cookie now follows `PUBLIC_APP_URL` (see `src/server/auth/cookies.ts`). If you're on HTTP, `PUBLIC_APP_URL` MUST start with `http://`, not `https://`. Once a TLS proxy is in front, flip `PUBLIC_APP_URL` to `https://...` and rebuild — the flag turns back on automatically.
+
+### Login rate-limit lockout for a legit user
+
+In-memory `loginByIp` bucket fires after 10 failed attempts in 15 min. To unblock:
 ```bash
 docker compose restart app   # clears the in-memory rate-limit map
 ```
 Or wait 15 minutes. Phase 4 — move to Redis-backed limiter so restart isn't needed.
 
 ### Per-school AI budget hit
+
 Symptom: `ActionError('RATE_LIMITED', 'งบ Token AI เดือนนี้หมดแล้ว...')` in toast for a teacher.
-Resolution:
+
 ```sql
 -- Inspect usage
 SELECT agent_id, SUM(total_tokens) FROM ai_run_logs
@@ -258,7 +299,7 @@ WHERE created_at >= DATE_FORMAT(NOW(), '%Y-%m-01') AND status='success'
 GROUP BY agent_id;
 
 -- Raise the budget for an agent
-UPDATE agents SET monthly_token_budget=200000 WHERE id='<uuid>';
+UPDATE agents SET monthly_token_budget = 200000 WHERE id = '<uuid>';
 ```
 
 ---
@@ -268,15 +309,16 @@ UPDATE agents SET monthly_token_budget=200000 WHERE id='<uuid>';
 Walk through before letting a real teacher in:
 
 - [ ] `.env` has REAL `ANTHROPIC_API_KEY` and `AUTH_SECRET` (not placeholders)
-- [ ] `docker compose ps` shows all services `healthy`
+- [ ] `DATABASE_URL` uses a scoped DB user (`snx_user`-style), not `root` — see §11 below
+- [ ] `PUBLIC_APP_URL` matches what users actually type in their browser
 - [ ] `curl /api/health` returns 200
 - [ ] Login + create reflection + AI summarize flow works end-to-end as the teacher demo user
-- [ ] First backup taken: `pnpm backup` (or via docker exec)
-- [ ] Backup restore tested into a scratch DB (do this once)
-- [ ] Cron entry added for daily backup
-- [ ] `docs/runbook.md` accessible to whoever's on-call (this file)
-- [ ] Set `Agent.monthlyTokenBudget` for each classroom agent (suggested: 50,000 / agent / month for haiku at ~30 reflections/teacher/month)
-- [ ] Document teacher demo password rotation: change `Pass1234!` to something the pilot teacher chose
+- [ ] Daily backup cron installed (§2) and `/var/log/snx-backup.log` shows a successful run
+- [ ] Backup restore tested into a scratch DB (do this once — §2 "Verify a backup is restorable")
+- [ ] Sentry DSN set (§9) so the on-call gets paged for real bugs (not validation errors)
+- [ ] `Agent.monthlyTokenBudget` set per classroom agent (suggested: 50,000 tokens/agent/month for haiku at ~30 reflections/teacher/month)
+- [ ] Teacher demo password rotated from `Pass1234!` to something the pilot teacher chose
+- [ ] This runbook accessible to whoever's on-call
 
 ---
 
@@ -284,34 +326,34 @@ Walk through before letting a real teacher in:
 
 Sentry is wired but **disabled by default**. Without `SENTRY_DSN`, the app is silent — `docker compose logs app` is the only error source.
 
-### Enable it
+### Enable
 
-1. Sign up at https://sentry.io (free tier: 5k errors/mo, plenty for a 5-teacher pilot)
-2. Create a project: platform = Next.js
-3. Copy the DSN: `https://<key>@<project>.ingest.sentry.io/<id>`
-4. Add to `.env` on the host:
+1. Sign up at https://sentry.io (free tier: 5k errors/mo, plenty for a 5-teacher pilot).
+2. Create a project: platform = Next.js.
+3. Copy the DSN: `https://<key>@<project>.ingest.sentry.io/<id>`.
+4. Add to `.env`:
    ```
    SENTRY_DSN="https://<key>@<project>.ingest.sentry.io/<id>"
    NEXT_PUBLIC_SENTRY_DSN="https://<key>@<project>.ingest.sentry.io/<id>"   # same value, browser-exposed
    SENTRY_ENVIRONMENT="pilot-<schoolname>"
-   SENTRY_TRACES_SAMPLE_RATE="0.1"   # 10% of requests get performance traces
+   SENTRY_TRACES_SAMPLE_RATE="0.1"
    ```
-5. **Rebuild** the image (the client DSN is inlined at build time):
+5. **Rebuild** — the client DSN is inlined at build time:
    ```bash
    docker compose build app
-   docker compose up -d
+   docker compose up -d --force-recreate app
    ```
 6. Trigger a deliberate error to verify — should show up in Sentry within ~30s.
 
 ### What Sentry captures
 
-- **Server-side**: uncaught errors in Server Components, route handlers, and `INTERNAL`-returning server actions
-- **Client-side**: React errors, hydration mismatches, errors during navigation
+- **Server-side**: uncaught errors in Server Components, route handlers, and `INTERNAL`-returning server actions.
+- **Client-side**: React errors, hydration mismatches, navigation errors.
 - **Filtered out** (in `src/instrumentation.ts` + `src/lib/observability.ts`):
-  - `VALIDATION` / `PERMISSION_DENIED` / `UNAUTHENTICATED` / `NOT_FOUND` / `RATE_LIMITED` — user-facing outcomes, not bugs
-  - Cookies + Authorization headers (scrubbed in `beforeSend`)
-  - Request body (potentially reflection content) — replaced with `[redacted]`
-- **Disabled by default**: session replays (privacy concern with classroom content on screen)
+  - `VALIDATION` / `PERMISSION_DENIED` / `UNAUTHENTICATED` / `NOT_FOUND` / `RATE_LIMITED` — user-facing outcomes, not bugs.
+  - Cookies + Authorization headers — scrubbed in `beforeSend`.
+  - Request body (potentially reflection content) — replaced with `[redacted]`.
+- **Disabled by default**: session replays (privacy concern with classroom content on screen).
 
 ### Manual capture from a server action
 
@@ -340,17 +382,18 @@ The container runs in-process schedulers (`node-cron`) when `CRON_ENABLED=true`.
 ### Manual trigger (ops + external schedulers)
 
 ```bash
-# Set on host BEFORE first deploy
-export CRON_SECRET=$(openssl rand -hex 24)
-docker compose up -d
+# Set on host BEFORE first deploy:
+CRON_SECRET="$(openssl rand -hex 24)"
+echo "CRON_SECRET=\"$CRON_SECRET\"" >> .env
+docker compose up -d --force-recreate app
 
 # Fire daily-reminder manually
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
-  https://your.domain/api/cron/daily-reminder | jq
+  "${PUBLIC_APP_URL}/api/cron/daily-reminder" | jq
 
 # Fire session cleanup
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
-  https://your.domain/api/cron/cleanup-sessions | jq
+  "${PUBLIC_APP_URL}/api/cron/cleanup-sessions" | jq
 ```
 
 Without `CRON_SECRET`, the endpoint refuses ALL requests (401). Empty string = no secret.
@@ -360,9 +403,9 @@ Without `CRON_SECRET`, the endpoint refuses ALL requests (401). Empty string = n
 In-process cron fires on every replica → duplicate runs. `daily-reminder` is idempotent via UNIQUE `(school_id, run_date, job_kind)` — duplicates INSERT-fail and skip. But it's noisy/wasteful.
 
 **Recommended for >1 replica:**
-1. Set `CRON_ENABLED=false` on app containers
-2. Add external scheduler (host crontab, Vercel Cron, GitHub Actions) hitting `/api/cron/<job>` with `CRON_SECRET`
-3. Pick ONE host to be the cron-runner
+1. Set `CRON_ENABLED=false` on app containers.
+2. Add external scheduler (host crontab, Vercel Cron, GitHub Actions) hitting `/api/cron/<job>` with `CRON_SECRET`.
+3. Pick ONE host to be the cron-runner.
 
 ### Inspecting cron history
 
@@ -380,11 +423,11 @@ The daily-reminder cron sends reminder emails to teachers who haven't logged tod
 
 ```bash
 # 1. Sign up at https://resend.com (free: 100/day, 3k/month)
-# 2. Add to .env on host:
+# 2. Add to .env:
 RESEND_API_KEY="re_xxxxxxxxxxxxxxxxxxx"
 EMAIL_FROM="SchoolNextgen <reminders@your.domain>"   # must be a verified domain
-# 3. Restart the app
-docker compose up -d
+# 3. Restart the app:
+docker compose up -d --force-recreate app
 ```
 
 **Without a verified domain:** Resend allows `onboarding@resend.dev` as a sandbox sender (default in env). Emails will arrive but with a Resend-branded From. Fine for early pilot.
@@ -399,26 +442,61 @@ FROM daily_reminder_logs
 WHERE job_kind='reminder' AND run_date >= CURDATE() - INTERVAL 7 DAY
 ORDER BY run_date DESC;
 ```
-- `notifications_sent` = actual deliveries (dry-runs + failures excluded)
-- `details.emailMode` = `'live'` when Resend ran, `'dry_run'` when no API key
-- `details.sendFailures` = array of `{userId, reason}` — per-recipient failures don't crash the cron
 
-### Failure modes
+- `notifications_sent` = actual deliveries (dry-runs + failures excluded).
+- `details.emailMode` = `'live'` when Resend ran, `'dry_run'` when no API key.
+- `details.sendFailures` = array of `{userId, reason}` — per-recipient failures don't crash the cron.
+
+### Email failure modes
 
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `emailMode='dry_run'` but `RESEND_API_KEY` is set | Key shorter than 8 chars → treated as unset | Use a real Resend key (starts with `re_`) |
 | All teachers in `sendFailures` with `reason='invalid_from_address'` | `EMAIL_FROM` domain not verified in Resend | Verify the domain at https://resend.com/domains, OR use sandbox `onboarding@resend.dev` |
 | One teacher in `sendFailures` per run | Their email bounces / address invalid | Check their `User.email` in DB; ask them to update |
-| `notifications_sent` always 0 with key set | Cron didn't actually run — check `/api/cron/daily-reminder` logs |
+| `notifications_sent` always 0 with key set | Cron didn't actually run | Check `/api/cron/daily-reminder` logs |
 
 ---
 
-## 11. What's deliberately not in this runbook
+## 11. DB user / credential hygiene
 
-- TLS/HTTPS setup → use Caddy/nginx in front; not Next.js's job
-- CI/CD → Phase 4
-- Multi-host failover → Phase 8+
-- Email delivery for reminders → T-131 (Phase 1.5)
-- Log aggregation (Axiom/Loki) → Phase 4. Today: `docker compose logs app` + Sentry for errors only
-- Schema-per-school multi-tenancy → not in design; we're row-level (`school_id` filter)
+The app should NOT connect as `root`. Create a scoped user once:
+
+```sql
+CREATE USER 'snx_user'@'%' IDENTIFIED BY '<strong-random-password>';
+GRANT ALL PRIVILEGES ON school_agent_db.* TO 'snx_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+One-liner from the docker host:
+```bash
+SNX_PASS="$(openssl rand -hex 24)"; echo "snx_user password: $SNX_PASS"
+docker run --rm -i -e MYSQL_PWD='<root-password>' mariadb:11 \
+  mariadb -h<host> -uroot <<SQL
+CREATE USER IF NOT EXISTS 'snx_user'@'%' IDENTIFIED BY '$SNX_PASS';
+ALTER  USER             'snx_user'@'%' IDENTIFIED BY '$SNX_PASS';
+GRANT ALL PRIVILEGES ON school_agent_db.* TO 'snx_user'@'%';
+FLUSH PRIVILEGES;
+SQL
+```
+
+Then update `.env`:
+```
+DATABASE_URL="mysql://snx_user:<SNX_PASS>@<host>:3306/school_agent_db"
+```
+
+`docker compose up -d --force-recreate app` to pick it up.
+
+After verifying the app still works under the new user, **rotate the root password** so an old copy of `.env` can't be used to escalate.
+
+`SHOW DATABASES;` as `snx_user` should return only `information_schema` + `school_agent_db`.
+
+---
+
+## 12. What's deliberately not in this runbook
+
+- TLS termination → handled by the reverse proxy in front of `app`; out of scope here. Set `PUBLIC_APP_URL` to `https://...` once it's live and the cookie `Secure` flag flips on.
+- CI/CD → Phase 4. Today: `git pull && ./scripts/deploy.sh` on the host.
+- Multi-host failover → Phase 8+.
+- Log aggregation (Axiom/Loki) → Phase 4. Today: `docker compose logs app` + Sentry for errors.
+- Schema-per-school multi-tenancy → not in design; we're row-level (`school_id` filter).
