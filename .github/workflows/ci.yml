@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: typecheck · lint · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: school_agent_db_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    # Test-suite placeholders. The real ANTHROPIC_API_KEY is never used in CI —
+    # all Anthropic calls are mocked. The schema in src/lib/env.ts validates
+    # these at app load, so they must satisfy the Zod regexes.
+    env:
+      DATABASE_URL: mysql://root:@127.0.0.1:3306/school_agent_db_test
+      AUTH_SECRET: ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci
+      ANTHROPIC_API_KEY: sk-ant-ci-placeholder-not-used
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma generate
+
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h127.0.0.1 -uroot --silent 2>/dev/null; then
+              echo "MySQL ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MySQL did not become ready in 30s"
+          exit 1
+
+      - name: Apply migrations to test DB
+        run: pnpm test:db:setup
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
