@@ -12,7 +12,25 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Coverage output — never linted.
+    "coverage/**",
   ]),
+  {
+    rules: {
+      // Allow `_`-prefixed parameters and vars to be intentionally unused.
+      // Common where a callback's type signature requires a parameter we
+      // don't read (e.g. `(_key: string) => ...`).
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;
