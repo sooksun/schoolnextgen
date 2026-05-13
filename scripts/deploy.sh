@@ -39,8 +39,11 @@ trap 'err "Deploy failed at line $LINENO. Container state below:"; $COMPOSE ps |
 command -v git    >/dev/null || { err "git not in PATH"; exit 1; }
 command -v docker >/dev/null || { err "docker not in PATH"; exit 1; }
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  err "Working tree is dirty. Commit/stash local changes before deploy:"
+# Block uncommitted edits to tracked files (would conflict with `git pull`),
+# but allow untracked scratch files like nano's *.save, manual *.sql.gz,
+# or ad-hoc notes — those don't affect what gets deployed.
+if ! git diff --quiet HEAD; then
+  err "Working tree has uncommitted changes to tracked files. Commit/stash before deploy:"
   git status --short
   exit 1
 fi

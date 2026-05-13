@@ -36,6 +36,8 @@ out/
 Thumbs.db
 *.swp
 *.swo
+# nano writes <file>.save when killed mid-edit; vi/vim leave .swp/.swo above.
+*.save
 
 # Logs
 logs/
