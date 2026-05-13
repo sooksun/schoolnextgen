@@ -387,6 +387,95 @@ async function main() {
     console.log(`  ✓ Academic Lead Agent already present (skipped)`)
   }
 
+  // ───── Sample Tasks (Phase 2) ────────────────────────────
+  // 3 tasks for the demo teacher so /teacher/tasks isn't empty on first login.
+  // Director assigns 2, deputy_academic assigns 1, mixed statuses for state-machine demo.
+  const directorUser = await prisma.user.findUniqueOrThrow({
+    where: { email: 'director@demo.local' },
+  })
+  const deputyAcademicUser = await prisma.user.findUniqueOrThrow({
+    where: { email: 'deputy.academic@demo.local' },
+  })
+  const existingTaskCount = await prisma.task.count({
+    where: { schoolId: school.id },
+  })
+  if (existingTaskCount === 0) {
+    const inThreeDays = new Date()
+    inThreeDays.setDate(inThreeDays.getDate() + 3)
+    const inSevenDays = new Date()
+    inSevenDays.setDate(inSevenDays.getDate() + 7)
+
+    const tasks: Array<{
+      title: string
+      description: string
+      status: string
+      priority: string
+      dueDate: Date | null
+      creatorId: string
+      approverId: string
+    }> = [
+      {
+        title: 'ทำแผนการสอนสัปดาห์ที่ 3 ของภาคเรียน',
+        description:
+          'จัดทำแผนการสอนสำหรับ ป.2 รายวิชาภาษาไทย เน้นการอ่านออกเขียนได้ ส่งภายในวันศุกร์',
+        status: 'assigned',
+        priority: 'high',
+        dueDate: inThreeDays,
+        creatorId: deputyAcademicUser.id,
+        approverId: deputyAcademicUser.id,
+      },
+      {
+        title: 'เก็บหลักฐานการสอน Active Learning ประจำเดือน',
+        description:
+          'อัปโหลดรูปภาพหรือคลิปการจัดกิจกรรมที่เน้นนักเรียนเป็นศูนย์กลาง 3–5 ชิ้น สำหรับ SAR',
+        status: 'assigned',
+        priority: 'normal',
+        dueDate: inSevenDays,
+        creatorId: directorUser.id,
+        approverId: deputyAcademicUser.id,
+      },
+      {
+        title: 'เข้าร่วม PLC ครูชั้นประถมต้น',
+        description:
+          'ประชุม PLC วันพุธหลังเลิกเรียน หัวข้อ "การช่วยเด็กที่ยังอ่านไม่คล่อง"',
+        status: 'in_progress',
+        priority: 'normal',
+        dueDate: null,
+        creatorId: directorUser.id,
+        approverId: deputyAcademicUser.id,
+      },
+    ]
+
+    for (const t of tasks) {
+      const task = await prisma.task.create({
+        data: {
+          schoolId: school.id,
+          academicYearId: year.id,
+          academicTermId: null,
+          departmentId: departments.academic.id,
+          classroomId: classroom.id,
+          taskType: 'general',
+          scopeLevel: 'classroom',
+          title: t.title,
+          description: t.description,
+          status: t.status,
+          priority: t.priority,
+          dueDate: t.dueDate,
+          createdByUserId: t.creatorId,
+        },
+      })
+      await prisma.taskAssignee.createMany({
+        data: [
+          { taskId: task.id, userId: teacherUser.id, role: 'responsible' },
+          { taskId: task.id, userId: t.approverId, role: 'approver' },
+        ],
+      })
+    }
+    console.log(`  ✓ ${tasks.length} sample tasks for ${teacherUser.email}`)
+  } else {
+    console.log(`  ✓ Tasks already seeded (${existingTaskCount}) — skipped`)
+  }
+
   console.log('🌱 Done.')
   console.log('')
   console.log('Demo logins (password = Pass1234!):')

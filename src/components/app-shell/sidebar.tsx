@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BarChart3, LayoutDashboard, NotebookPen } from 'lucide-react'
+import { BarChart3, ClipboardList, LayoutDashboard, NotebookPen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type NavItem = {
@@ -19,6 +19,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/teacher', label: 'หน้าหลัก', icon: LayoutDashboard, roles: ['teacher'] },
   { href: '/teacher/reflections', label: 'บันทึก Reflection', icon: NotebookPen, roles: ['teacher'] },
+  { href: '/teacher/tasks', label: 'งานที่ได้รับมอบหมาย', icon: ClipboardList, roles: ['teacher'] },
   { href: '/school/dashboard', label: 'Dashboard โรงเรียน', icon: LayoutDashboard, roles: ['director', 'academic_lead', 'deputy_academic', 'deputy_budget', 'deputy_hr', 'deputy_general_affairs'] },
   { href: '/school/dashboard/metrics', label: 'Metrics', icon: BarChart3, roles: ['director', 'academic_lead', 'deputy_academic'] },
 ]

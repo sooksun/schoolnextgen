@@ -5,6 +5,7 @@
  */
 
 import type { Scope } from './types'
+import type { TaskActorRole, TaskStatus } from '@/lib/tasks/types'
 
 type ReflectionSubset = {
   teacherUserId: string
@@ -13,7 +14,29 @@ type ReflectionSubset = {
   status: string
 }
 
+type TaskSubset = {
+  schoolId: string
+  departmentId: string | null
+  classroomId: string | null
+  createdByUserId: string
+  status: string
+}
+
+type TaskAssigneeRow = {
+  userId: string | null
+  role: string // responsible | reviewer | approver | observer
+}
+
 const STAFF_ROLES = new Set([
+  'director',
+  'academic_lead',
+  'deputy_academic',
+  'deputy_budget',
+  'deputy_hr',
+  'deputy_general_affairs',
+])
+
+const APPROVER_ROLES = new Set([
   'director',
   'academic_lead',
   'deputy_academic',
@@ -61,5 +84,62 @@ export const can = {
     if (file.schoolId !== scope.schoolId) return false
     if (scope.role === 'teacher') return file.uploadedByUserId === scope.user.id
     return STAFF_ROLES.has(scope.role)
+  },
+
+  // ───── Tasks (Phase 2) ────────────────────────────────────
+  /**
+   * View: assignees see their own tasks; staff see anything in their school
+   * (further dept/classroom narrowing can be added when we know the UX).
+   */
+  viewTask(scope: Scope, task: TaskSubset, assignees: ReadonlyArray<TaskAssigneeRow>): boolean {
+    if (task.schoolId !== scope.schoolId) return false
+    if (STAFF_ROLES.has(scope.role)) return true
+    if (scope.role === 'teacher') {
+      return assignees.some((a) => a.userId === scope.user.id)
+    }
+    return false
+  },
+
+  /** Only director / deputies create tasks in Phase 2. Teachers receive. */
+  createTask(scope: Scope): boolean {
+    return STAFF_ROLES.has(scope.role)
+  },
+
+  /**
+   * Resolve the actor bucket (`creator | responsible | approver | admin | agent`)
+   * for state-machine checks. `null` if user has no standing to act.
+   *
+   * `admin` here = director-equivalent (only director gets cancel-anything).
+   * Deputies are approvers in their department's chain, not admins.
+   */
+  taskActorRole(
+    scope: Scope,
+    task: TaskSubset,
+    assignees: ReadonlyArray<TaskAssigneeRow>,
+  ): TaskActorRole | null {
+    if (task.schoolId !== scope.schoolId) return null
+    if (scope.role === 'director') return 'admin'
+    if (task.createdByUserId === scope.user.id) return 'creator'
+    if (assignees.some((a) => a.userId === scope.user.id && a.role === 'approver')) {
+      return 'approver'
+    }
+    if (APPROVER_ROLES.has(scope.role)) {
+      // Deputy/academic_lead: approver IF the task is in their department.
+      if (task.departmentId && task.departmentId === scope.departmentId) return 'approver'
+    }
+    if (assignees.some((a) => a.userId === scope.user.id && a.role === 'responsible')) {
+      return 'responsible'
+    }
+    return null
+  },
+
+  /** Convenience wrapper. UI/actions call this to decide which next-state buttons to render. */
+  canChangeTaskStatus(
+    scope: Scope,
+    task: TaskSubset,
+    assignees: ReadonlyArray<TaskAssigneeRow>,
+    _next: TaskStatus,
+  ): TaskActorRole | null {
+    return can.taskActorRole(scope, task, assignees)
   },
 }

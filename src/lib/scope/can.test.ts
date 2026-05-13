@@ -201,3 +201,111 @@ describe('can.viewEvidenceFile', () => {
     }
   })
 })
+
+// ────────────────────────────────────────────────────────────
+// Tasks (Phase 2)
+// ────────────────────────────────────────────────────────────
+
+function makeTask(overrides: Partial<Parameters<typeof can.viewTask>[1]> = {}) {
+  return {
+    schoolId: 'school-A',
+    departmentId: 'dept-academic',
+    classroomId: 'classroom-1',
+    createdByUserId: 'director-1',
+    status: 'assigned',
+    ...overrides,
+  }
+}
+
+describe('can.viewTask', () => {
+  it('assigned teacher sees own task', () => {
+    expect(
+      can.viewTask(makeScope('teacher'), makeTask(), [{ userId: 'user-1', role: 'responsible' }]),
+    ).toBe(true)
+  })
+
+  it('non-assigned teacher CANNOT see task', () => {
+    expect(
+      can.viewTask(makeScope('teacher'), makeTask(), [{ userId: 'other', role: 'responsible' }]),
+    ).toBe(false)
+  })
+
+  it('director sees any task in their school', () => {
+    expect(can.viewTask(makeScope('director'), makeTask(), [])).toBe(true)
+  })
+
+  it('cross-school denied even for director', () => {
+    expect(
+      can.viewTask(makeScope('director'), makeTask({ schoolId: 'school-B' }), []),
+    ).toBe(false)
+  })
+})
+
+describe('can.createTask', () => {
+  it('director, academic_lead, all deputies allowed', () => {
+    for (const role of ['director', 'academic_lead', 'deputy_academic', 'deputy_budget', 'deputy_hr', 'deputy_general_affairs']) {
+      expect(can.createTask(makeScope(role))).toBe(true)
+    }
+  })
+
+  it('teacher cannot create tasks (Phase 2 — receive only)', () => {
+    expect(can.createTask(makeScope('teacher'))).toBe(false)
+  })
+})
+
+describe('can.taskActorRole', () => {
+  it('director is always admin in own school', () => {
+    expect(
+      can.taskActorRole(makeScope('director'), makeTask(), [{ userId: 'someone', role: 'responsible' }]),
+    ).toBe('admin')
+  })
+
+  it('creator (non-director) reports as creator', () => {
+    expect(
+      can.taskActorRole(makeScope('deputy_academic', { user: { id: 'director-1', personId: 'p', email: 'x' } }), makeTask(), []),
+    ).toBe('creator')
+  })
+
+  it('responsible teacher reports as responsible', () => {
+    expect(
+      can.taskActorRole(makeScope('teacher'), makeTask(), [{ userId: 'user-1', role: 'responsible' }]),
+    ).toBe('responsible')
+  })
+
+  it('deputy_academic in matching department is approver', () => {
+    expect(
+      can.taskActorRole(
+        makeScope('deputy_academic', { departmentId: 'dept-academic' }),
+        makeTask({ departmentId: 'dept-academic' }),
+        [],
+      ),
+    ).toBe('approver')
+  })
+
+  it('deputy_academic in MISMATCHED department is null (not approver)', () => {
+    expect(
+      can.taskActorRole(
+        makeScope('deputy_academic', { departmentId: 'dept-other' }),
+        makeTask({ departmentId: 'dept-academic' }),
+        [],
+      ),
+    ).toBeNull()
+  })
+
+  it('explicit approver assignment beats role check', () => {
+    // teacher who happens to be listed as approver on a specific task
+    expect(
+      can.taskActorRole(makeScope('teacher'), makeTask(), [{ userId: 'user-1', role: 'approver' }]),
+    ).toBe('approver')
+  })
+
+  it('cross-school returns null', () => {
+    expect(
+      can.taskActorRole(makeScope('director'), makeTask({ schoolId: 'school-B' }), []),
+    ).toBeNull()
+  })
+
+  it('unrelated user returns null', () => {
+    expect(can.taskActorRole(makeScope('teacher'), makeTask(), [])).toBeNull()
+  })
+})
