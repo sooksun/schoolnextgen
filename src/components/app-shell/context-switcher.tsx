@@ -4,6 +4,7 @@ import { Building2, GraduationCap, ChevronDown } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -65,7 +66,9 @@ export function ContextSwitcher({ current, memberships }: Props) {
       />
       {hasMultiple ? (
         <DropdownMenuContent align="start" className="min-w-72">
-          <DropdownMenuLabel>โรงเรียนของฉัน</DropdownMenuLabel>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>โรงเรียนของฉัน</DropdownMenuLabel>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
           {memberships.map((m) => (
             <DropdownMenuItem

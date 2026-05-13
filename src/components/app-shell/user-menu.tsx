@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -49,13 +50,16 @@ export function UserMenu({ email, displayName, roleName }: Props) {
         }
       />
       <DropdownMenuContent align="end" className="min-w-56">
-        <DropdownMenuLabel>
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold truncate">{displayName}</span>
-            <span className="text-xs text-muted-foreground truncate">{email}</span>
-            <span className="text-xs text-primary mt-1">{roleName}</span>
-          </div>
-        </DropdownMenuLabel>
+        {/* Base UI's MenuGroupLabel throws on render unless inside MenuGroup. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>
+            <div className="flex flex-col">
+              <span className="text-sm font-semibold truncate">{displayName}</span>
+              <span className="text-xs text-muted-foreground truncate">{email}</span>
+              <span className="text-xs text-primary mt-1">{roleName}</span>
+            </div>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled>
           <UserIcon /> โปรไฟล์ <span className="text-xs text-muted-foreground ml-auto">เร็ว ๆ นี้</span>
