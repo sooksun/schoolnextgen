@@ -1,8 +1,7 @@
 'use client'
 
-import { useTransition } from 'react'
-import { useRouter } from 'next/navigation'
 import { LogOut, User as UserIcon } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -22,24 +21,19 @@ type Props = {
 
 export function UserMenu({ email, displayName, roleName }: Props) {
   const router = useRouter()
-  const [pending, startTransition] = useTransition()
 
-  function handleSignOut() {
-    startTransition(async () => {
-      // signOutAction ends with redirect('/login') on the server, which
-      // throws NEXT_REDIRECT. When invoked from an onClick handler,
-      // Next 16 doesn't always forward that into client navigation —
-      // so we catch it and push the router manually. The server-side
-      // work (invalidate session, clear cookie) is already done by the
-      // time the throw reaches us.
-      try {
-        await signOutAction()
-      } catch {
-        // NEXT_REDIRECT or any other rejection — we navigate regardless.
-      }
-      router.push('/login')
-      router.refresh()
-    })
+  async function handleSignOut() {
+    // signOutAction throws NEXT_REDIRECT after invalidating the session
+    // and clearing the cookie. We swallow that throw and push the router
+    // ourselves so navigation is deterministic regardless of how Next 16
+    // chooses to propagate the redirect from a non-form invocation.
+    try {
+      await signOutAction()
+    } catch {
+      /* NEXT_REDIRECT or anything else — we navigate either way */
+    }
+    router.push('/login')
+    router.refresh()
   }
 
   return (
@@ -66,11 +60,7 @@ export function UserMenu({ email, displayName, roleName }: Props) {
         <DropdownMenuItem disabled>
           <UserIcon /> โปรไฟล์ <span className="text-xs text-muted-foreground ml-auto">เร็ว ๆ นี้</span>
         </DropdownMenuItem>
-        <DropdownMenuItem
-          variant="destructive"
-          disabled={pending}
-          onClick={handleSignOut}
-        >
+        <DropdownMenuItem variant="destructive" onClick={handleSignOut}>
           <LogOut /> ออกจากระบบ
         </DropdownMenuItem>
       </DropdownMenuContent>
