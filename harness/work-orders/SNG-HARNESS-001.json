@@ -1,0 +1,13 @@
+{
+  "id": "SNG-HARNESS-001",
+  "source": "Repository maintainer's request to pilot the Solution Nextgen coding harness",
+  "owner": "SchoolNextgen maintainer",
+  "outcome": "SchoolNextgen pull requests run the existing checks through the coding harness before merging into main.",
+  "risk": "standard",
+  "plan": "Reuse the current GitHub Actions job, including the isolated MySQL test service and Prisma migrations. Run its existing typecheck, lint and Vitest scripts through the harness.",
+  "acceptance": [
+    {"outcome": "The TypeScript project passes the existing typecheck.", "check": "typecheck"},
+    {"outcome": "The repository passes the existing ESLint command.", "check": "lint"},
+    {"outcome": "The existing Vitest suite runs with the migrated test database and passes.", "check": "test"}
+  ]
+}
